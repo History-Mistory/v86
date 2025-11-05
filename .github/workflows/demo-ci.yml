@@ -1,0 +1,96 @@
+# This file fakes a CI and Deployment pipeline
+# It will be triggered by your Python script's merged PRs
+
+name: Fake CI & Deployment
+
+on:
+  push:
+    branches:
+      - main  # Or 'master', whatever your default branch is
+      - master
+      
+permissions:
+  contents: read
+  deployments: write # IMPORTANT: Give the workflow permission to write deployment statuses
+
+jobs:
+  build:
+    name: 1. Fake CI Build
+    runs-on: ubuntu-latest
+    outputs:
+      # We'll pass the commit message to the next job
+      commit_message: ${{ github.event.head_commit.message }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run fake build and tests
+        run: |
+          echo "Running build..."
+          sleep 5 # Simulate a build
+          echo "Running tests..."
+          sleep 10 # Simulate tests
+      - name: Check for intentional failure
+        # This is the key! If your commit message includes [FAIL], this job will fail.
+        if: "contains(github.event.head_commit.message, '[FAIL]')"
+        run: |
+          echo "Build failed! (Simulated)"
+          exit 1
+      - name: Build passed
+        run: |
+          echo "Build passed!"
+
+  deploy:
+    name: 2. Fake Deployment
+    needs: build # This job runs after 'build'
+    if: always() # IMPORTANT: Run this job even if the 'build' job failed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Deployment
+        id: create_deployment
+        # This action calls the API to create the "Deployment" object
+        # This is what your "deployment-frequency" API will count
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: deployment } = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.ref,
+              environment: 'production', // This is what your API should filter on
+              auto_merge: false,
+              required_contexts: [],
+              description: 'Fake deployment for DORA metrics demo'
+            });
+            core.setOutput('deployment_id', deployment.id);
+            console.log(`Created deployment with ID: ${deployment.id}`);
+
+      - name: Set Deployment Status (Success or Failure)
+        # This action updates the deployment status.
+        # This is what your "change-failure-rate" API will count.
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Get the result from the 'build' job
+            const buildResult = '${{ needs.build.result }}';
+            let deployState;
+            
+            if (buildResult === 'success') {
+              deployState = 'success';
+            } else {
+              deployState = 'failure';
+            }
+            
+            console.log(`Build job result: ${buildResult}`);
+            console.log(`Setting deployment status to: ${deployState}`);
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
+              state: deployState,
+              environment_url: 'https://github.com', // A dummy URL
+              log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`, // Link to the workflow
+              description: `Build job ${buildResult}`
+            });
+
